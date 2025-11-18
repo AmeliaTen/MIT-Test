@@ -125,6 +125,12 @@ static void *all_techniques_worker_func(void *args) {
                 // (3) use _mm256_srli_epi16 and _mm256_and_si256 with lowMask to extract the upper half of weights
                 __m256i raw_w = _mm256_loadu_si256(w_start);
                 __m256i raw_w_next = _mm256_loadu_si256(w_start + 1);
+                // lower half weights
+                __m256i raw_w_low_uint = _mm256_and_si256(raw_w, lowMask);
+                __m256i raw_w_next_low_uint = _mm256_and_si256(raw_w_next, lowMask);
+                // higher half weights
+                __m256i raw_w_high_uint = _mm256_and_si256(_mm256_srli_epi16(raw_w, 4), lowMask);
+                __m256i raw_w_next_high_uint = _mm256_and_si256(_mm256_srli_epi16(raw_w_next, 4), lowMask);
 
                 // TODO: apply zero_point to weights and convert the range from (0, 15) to (-8, 7)
                 // Hint: using `_mm256_sub_epi8` to the lower-half and upper-half vectors of weights
@@ -133,6 +139,10 @@ static void *all_techniques_worker_func(void *args) {
                 // `w_0_next` and `w_128_next`, respectively
                 const __m256i zero_point = _mm256_set1_epi8(8);
                 __m256i w_0, w_128, w_0_next, w_128_next;
+                w_0 = _mm256_sub_epi8(raw_w_low_uint, zero_point);
+                w_128 = _mm256_sub_epi8(raw_w_high_uint, zero_point);
+                w_0_next = _mm256_sub_epi8(raw_w_next_low_uint, zero_point);
+                w_128_next = _mm256_sub_epi8(raw_w_next_high_uint, zero_point);
 
                 // Perform int8 dot product with _mm256_maddubs_epi16
                 /* Syntax of _mm256_maddubs_epi16:
@@ -169,6 +179,10 @@ static void *all_techniques_worker_func(void *args) {
                 // dot2 = ax2 * sy2
                 // dot3 = ax_next * sy_next
                 // dot4 = ax2_next * sy2_next
+                dot = _mm256_maddubs_epi16(ax, sy);
+                dot2 = _mm256_maddubs_epi16(ax2, sy2);
+                dot3 = _mm256_maddubs_epi16(ax_next, sy_next);
+                dot4 = _mm256_maddubs_epi16(ax2_next, sy2_next);
 
                 // Convert int32 vectors to floating point vectors
                 const __m256i ones = _mm256_set1_epi16(1);
@@ -221,8 +235,22 @@ void MatmulOperator::mat_mul_all_techniques(struct matmul_params *params) {
     struct w4a8_thread_args threads_args[num_thread];
     assert(params->block_size == 32);  // support block size 32 for now
 
-    // TODO: Thread creation
+    i = C->row;
+    j = C->column;
+    k = A->column;
 
+    // TODO: Thread creation
+    for(int index = 0; index < num_thread; index++) {
+        threads_args[index].params = params;
+        threads_args[index].start_j = index * (j / num_thread);
+        threads_args[index].end_j = (index + 1) * (j / num_thread);
+        int is_success = pthread_create(&thread_pool[index], NULL, 
+            all_techniques_worker_func, &threads_args[index]);
+        assert(is_success == 0);  // 检查线程创建是否成功
+    }
     // TODO: Join threads
+    for (int index = 0; index < num_thread; index++) {
+        pthread_join(thread_pool[index], NULL);  // 阻塞等待线程i结束
+    }
 };
 }  // namespace matmul

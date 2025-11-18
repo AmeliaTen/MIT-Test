@@ -1,14 +1,21 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sys/types.h>
 
 #include <cmath>
 #include <cstdlib>
 
 #include "../matmul.h"
 #include "common.h"
+
+//  2025.11.11多线程循环展开
+//  量化+循环展开+多线程
+
 struct multithreading_loop_unrolling_thread_args {
+    //  每个线程所被分配的计算任务的起始和结束列索引
     int start, end;
+    //  保存计算相关矩阵
     const struct matmul_params *params;
 };
 static void *multithreading_loop_unrolling_worker_func(void *args) {
@@ -29,15 +36,17 @@ static void *multithreading_loop_unrolling_worker_func(void *args) {
             // Compute each block
             for (int ch = 0; ch < k;) {
                 // pointer of the int8 activation
+                // int8类型的激活值
                 const signed char *a_int8 = &A->int8_data_ptr[row * k + ch];
                 // pointer of the int4 weights
+                //  两个int4类型的权重值打包在一个字节中
                 uint8_t *w0_int4 = &B->int4_data_ptr[(col * k + ch) / 2];
                 uint8_t *w1_int4 = &B->int4_data_ptr[((col + 1) * k + ch) / 2];
                 uint8_t *w2_int4 = &B->int4_data_ptr[((col + 2) * k + ch) / 2];
                 uint8_t *w3_int4 = &B->int4_data_ptr[((col + 3) * k + ch) / 2];
-                // scale of activation
+                // scale of activation(the first block)
                 float s_a = params->A_scales[(row * k + ch) / block_size];
-                // scale of weight
+                // scale of weight(the first block)
                 float s_w0 = params->scales[(col * k + ch) / block_size];
                 float s_w1 = params->scales[((col + 1) * k + ch) / block_size];
                 float s_w2 = params->scales[((col + 2) * k + ch) / block_size];
@@ -73,6 +82,7 @@ static void *multithreading_loop_unrolling_worker_func(void *args) {
                 float s_w1_2nd = params->scales[((col + 1) * k + ch) / block_size + 1];
                 float s_w2_2nd = params->scales[((col + 2) * k + ch) / block_size + 1];
                 float s_w3_2nd = params->scales[((col + 3) * k + ch) / block_size + 1];
+                // scales of the second block
                 float s_a_2nd = params->A_scales[(row * k + ch) / block_size + 1];
                 // order of weights with QM_x86:
                 // origin order: (w0,w1), (w2,w3), (w4,w5), (w6,w7), (w8, w9), ... (w62,w63)
@@ -90,7 +100,31 @@ static void *multithreading_loop_unrolling_worker_func(void *args) {
                     intermediate_sum3_2nd = 0;
                 for (int qj = 0; qj < 32; qj++) {
                     // TODO: decode a packed byte into two int8 in the range of (-8, 7)
+                    uint8_t packed_int4_0 = w0_int4[qj];
+                    uint8_t packed_int4_1 = w1_int4[qj];
+                    uint8_t packed_int4_2 = w2_int4[qj];
+                    uint8_t packed_int4_3 = w3_int4[qj];
 
+                    signed char w0_de_0 = (packed_int4_0 & 0x0F) - 8.0;
+                    signed char w0_de_16 = (packed_int4_0 >> 4) - 8.0;
+                    signed char w1_de_0 = (packed_int4_1 & 0x0F) - 8.0;
+                    signed char w1_de_16 = (packed_int4_1 >> 4) - 8.0;
+                    signed char w2_de_0 = (packed_int4_2 & 0x0F) - 8.0;
+                    signed char w2_de_16 = (packed_int4_2 >> 4) - 8.0;
+                    signed char w3_de_0 = (packed_int4_3 & 0x0F) - 8.0;
+                    signed char w3_de_16 = (packed_int4_3 >> 4) - 8.0;
+                    // TODO: int8 multiply and accumulate operation
+                    // first block
+                    intermediate_sum0 += (int)a_int8[qj] * (int)w0_de_0;
+                    intermediate_sum1 += (int)a_int8[qj] * (int)w1_de_0;
+                    intermediate_sum2 += (int)a_int8[qj] * (int)w2_de_0;
+                    intermediate_sum3 += (int)a_int8[qj] * (int)w3_de_0;
+                    // second block
+                    intermediate_sum0_2nd += (int)a_int8[qj + block_size] * (int)w0_de_16;
+                    intermediate_sum1_2nd += (int)a_int8[qj + block_size] * (int)w1_de_16;
+                    intermediate_sum2_2nd += (int)a_int8[qj + block_size] * (int)w2_de_16;
+                    intermediate_sum3_2nd += (int)a_int8[qj + block_size] * (int)w3_de_16;
+                    
                     // TODO: int8 multiply and accumulate operation
                 }
                 // dequantize the sum into floating point
@@ -131,7 +165,19 @@ void MatmulOperator::mat_mul_multithreading_loop_unrolling(struct matmul_params 
     assert(params->block_size == 32);  // support block size 32 for now
 
     // TODO: Thread creation
-
+    for(int i = 0; i < num_thread; i++) {
+        threads_args[i].params = params;
+        threads_args[i].start = n / num_thread * i;
+        threads_args[i].end = n / num_thread * (i + 1) - 1;
+        int ret = pthread_create(&thread_pool[i], NULL, 
+                                multithreading_loop_unrolling_worker_func, 
+                                &threads_args[i]);
+        assert(ret == 0);  // 检查线程创建是否成功
+    }
+    // TODO: Join threads（等待所有线程完成）
+    for (int i = 0; i < num_thread; i++) {
+        pthread_join(thread_pool[i], NULL);  // 阻塞等待线程i结束
+    }
     // TODO: Join threads
 };
 }  // namespace matmul

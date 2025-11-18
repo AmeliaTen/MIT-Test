@@ -41,6 +41,16 @@ void test_FPLinear_int4() {
     }
     bool success = check_two_equal(outputQ.m_data, outputQ_fast.m_data, outputQ_fast.length(), 1e-3);
 
+    // for (int i = 0; i < 10; i++) {
+    // // m_data 是 float* 类型，直接通过下标访问第 i 个元素
+    // std::cout << "正确输出：outputQ[" << i << "] = " << outputQ.m_data[i] << std::endl;
+    // }
+
+    // for (int i = 0; i < 10; i++) {
+    // // m_data 是 float* 类型，直接通过下标访问第 i 个元素
+    // std::cout << "实际输出：outputQ_fast[" << i << "] = " << outputQ_fast.m_data[i] << std::endl;
+    // }
+
     if (!success) {
         std::cout << "-------- Sanity check of " << int4_op.profile_name << " implementation: Fail! -------- "
                   << std::endl;

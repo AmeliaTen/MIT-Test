@@ -3,17 +3,28 @@
 #include <stdio.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+
+#include <bitset>
 
 #include "../matmul.h"
 #include "common.h"
 
+#include <iostream>
+using namespace std;
+
+// 2025.11.11循环展开
+
+// 维度说明，A[m,k], B[n,k], C[m,n]
 namespace matmul {
 void MatmulOperator::mat_mul_loop_unrolling(struct matmul_params *params) {
     const struct matrix *A = &params->A, *B = &params->B, *C = &params->C;
     const int block_size = params->block_size;  // block_size = 32
     float *scale = params->scales, *offset = params->offset;
 
+    // quantize the input activation from fp32 to int8
+    // 对激活矩阵A进行int8量化
     quantize_fp32_to_int8(A->data_ptr, A->int8_data_ptr, params->A_scales, A->row * A->column, block_size);
 
     int m = C->row, n = C->column, k = A->column;
@@ -88,8 +99,35 @@ void MatmulOperator::mat_mul_loop_unrolling(struct matmul_params *params) {
                     intermediate_sum3_2nd = 0;
                 for (int qj = 0; qj < 32; qj++) {
                     // TODO: decode a packed byte into two int8 in the range of (-8, 7)
+                    uint8_t packed_int4_0 = w0_int4[qj];
+                    uint8_t packed_int4_1 = w1_int4[qj];
+                    uint8_t packed_int4_2 = w2_int4[qj];
+                    uint8_t packed_int4_3 = w3_int4[qj];
 
+                    signed char w0_de_0 = (packed_int4_0 & 0x0F) - 8.0;
+                    signed char w0_de_16 = (packed_int4_0 >> 4) - 8.0;
+                    signed char w1_de_0 = (packed_int4_1 & 0x0F) - 8.0;
+                    signed char w1_de_16 = (packed_int4_1 >> 4) - 8.0;
+                    signed char w2_de_0 = (packed_int4_2 & 0x0F) - 8.0;
+                    signed char w2_de_16 = (packed_int4_2 >> 4) - 8.0;
+                    signed char w3_de_0 = (packed_int4_3 & 0x0F) - 8.0;
+                    signed char w3_de_16 = (packed_int4_3 >> 4) - 8.0;
                     // TODO: int8 multiply and accumulate operation
+                    // first block
+                    intermediate_sum0 += (int)a_int8[qj] * (int)w0_de_0;
+                    intermediate_sum1 += (int)a_int8[qj] * (int)w1_de_0;
+                    intermediate_sum2 += (int)a_int8[qj] * (int)w2_de_0;
+                    intermediate_sum3 += (int)a_int8[qj] * (int)w3_de_0;
+                    // second block
+                    intermediate_sum0_2nd += (int)a_int8[qj + block_size] * (int)w0_de_16;
+                    intermediate_sum1_2nd += (int)a_int8[qj + block_size] * (int)w1_de_16;
+                    intermediate_sum2_2nd += (int)a_int8[qj + block_size] * (int)w2_de_16;
+                    intermediate_sum3_2nd += (int)a_int8[qj + block_size] * (int)w3_de_16;
+
+
+                    // if(row == 0 && col == 0 && ch < 100)
+                    // {cout << "a_int8[qj]: " << (int)a_int8[qj] << ", w0_int8_high_4byte: " << (int)w0_de_16
+                    //      << ", w0_int8_low_4byte: " << (int)w0_de_0 << ", w0_int4[qj]：" << std::bitset<8>(w0_int4[qj]) << endl;}
                 }
                 // dequantize the sum into floating point
                 acc0 += (float)intermediate_sum0 * s_a * s_w0;
