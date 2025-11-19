@@ -1,7 +1,7 @@
 # 说明
 
 本仓库所有代码均来自MIT han实验室，仓库代码主要用于学习讨论。
-再次感觉MIT han song老师公开课程！
+再次感谢MIT han song老师公开课程！
 
 # Tutorial for TinyChat: Optimizing LLM on Edge Devices
 
